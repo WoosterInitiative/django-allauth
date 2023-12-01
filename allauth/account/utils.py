@@ -1,10 +1,10 @@
-import time
 import unicodedata
 from collections import OrderedDict
+from typing import Optional
 
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import update_session_auth_hash
+from django.contrib.auth import get_user_model, update_session_auth_hash
 from django.core.exceptions import FieldDoesNotExist
 from django.db import models
 from django.db.models import Q
@@ -17,7 +17,6 @@ from allauth.account.models import Login
 from allauth.core.exceptions import ImmediateHttpResponse
 from allauth.utils import (
     get_request_param,
-    get_user_model,
     import_callable,
     valid_email_or_none,
 )
@@ -273,9 +272,18 @@ def cleanup_email_addresses(request, addresses):
         # ... and non-conflicting ones...
         if (
             app_settings.UNIQUE_EMAIL
+            and app_settings.PREVENT_ENUMERATION != "strict"
+            and EmailAddress.objects.lookup([email])
+        ):
+            # Email address already exists.
+            continue
+        if (
+            app_settings.UNIQUE_EMAIL
+            and app_settings.PREVENT_ENUMERATION == "strict"
             and address.verified
             and EmailAddress.objects.is_verified(email)
         ):
+            # Email address already exists, and is verified as well.
             continue
         a = e2a.get(email.lower())
         if a:
@@ -302,7 +310,7 @@ def cleanup_email_addresses(request, addresses):
         primary_address = primary_addresses[0]
     elif e2a:
         # Pick the first
-        primary_address = e2a.keys()[0]
+        primary_address = list(e2a.values())[0]
     else:
         # Empty
         primary_address = None
@@ -358,16 +366,31 @@ def send_email_confirmation(request, user, signup=False, email=None):
     sent (consider a user retrying a few times), which is why there is
     a cooldown period before sending a new mail. This cooldown period
     can be configured in ACCOUNT_EMAIL_CONFIRMATION_COOLDOWN setting.
+
+    TODO: This code is doing way too much. Looking up EmailAddress, creating
+    if not present, etc. To be refactored.
     """
     from .models import EmailAddress
 
     adapter = get_adapter()
 
+    email_address = None
     if not email:
         email = user_email(user)
+    if not email:
+        email_address = (
+            EmailAddress.objects.filter(user=user).order_by("verified", "pk").first()
+        )
+        if email_address:
+            email = email_address.email
+
     if email:
-        try:
-            email_address = EmailAddress.objects.get_for_user(user, email)
+        if email_address is None:
+            try:
+                email_address = EmailAddress.objects.get_for_user(user, email)
+            except EmailAddress.DoesNotExist:
+                pass
+        if email_address is not None:
             if not email_address.verified:
                 send_email = adapter.should_send_confirmation_mail(
                     request, email_address
@@ -376,7 +399,7 @@ def send_email_confirmation(request, user, signup=False, email=None):
                     email_address.send_confirmation(request, signup=signup)
             else:
                 send_email = False
-        except EmailAddress.DoesNotExist:
+        else:
             send_email = True
             email_address = EmailAddress.objects.add_email(
                 request, user, email, signup=signup, confirm=True
@@ -518,22 +541,37 @@ def url_str_to_user_pk(pk_str):
     return pk
 
 
-def record_authentication(request, user):
-    request.session["account_authenticated_at"] = time.time()
-
-
-def did_recently_authenticate(request):
-    if request.user.is_anonymous:
-        return False
-    if not request.user.has_usable_password():
-        # TODO: This user only has social accounts attached. Now, ideally, you
-        # would want to reauthenticate over at the social account provider. For
-        # now, this is not implemented. Although definitely suboptimal, this
-        # method is currently used for reauthentication checks over at MFA, and,
-        # users that delegate the security of their account to an external
-        # provider like Google typically use MFA over there anyway.
+def assess_unique_email(email) -> Optional[bool]:
+    """
+    True -- email is unique
+    False -- email is already in use
+    None -- email is in use, but we should hide that using email verification.
+    """
+    if not filter_users_by_email(email):
+        # All good.
         return True
-    authenticated_at = request.session.get("account_authenticated_at")
-    if not authenticated_at:
+    elif not app_settings.PREVENT_ENUMERATION:
+        # Fail right away.
         return False
-    return time.time() - authenticated_at < app_settings.REAUTHENTICATION_TIMEOUT
+    elif (
+        app_settings.EMAIL_VERIFICATION
+        == app_settings.EmailVerificationMethod.MANDATORY
+    ):
+        # In case of mandatory verification and enumeration prevention,
+        # we can avoid creating a new account with the same (unverified)
+        # email address, because we are going to send an email anyway.
+        assert app_settings.PREVENT_ENUMERATION
+        return None
+    elif app_settings.PREVENT_ENUMERATION == "strict":
+        # We're going to be strict on enumeration prevention, and allow for
+        # this email address to pass even though it already exists. In this
+        # scenario, you can signup multiple times using the same email
+        # address resulting in multiple accounts with an unverified email.
+        return True
+    else:
+        assert app_settings.PREVENT_ENUMERATION is True
+        # Conflict. We're supposed to prevent enumeration, but we can't
+        # because that means letting the user in, while emails are required
+        # to be unique. In this case, uniqueness takes precedence over
+        # enumeration prevention.
+        return False

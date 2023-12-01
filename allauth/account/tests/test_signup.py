@@ -1,7 +1,6 @@
-from __future__ import absolute_import
-
 import django
 from django import forms
+from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.messages.middleware import MessageMiddleware
 from django.contrib.sessions.middleware import SessionMiddleware
@@ -10,6 +9,7 @@ from django.test.client import Client, RequestFactory
 from django.test.utils import override_settings
 from django.urls import reverse
 
+import pytest
 from pytest_django.asserts import assertTemplateUsed
 
 from allauth.account import app_settings
@@ -18,7 +18,7 @@ from allauth.account.forms import BaseSignupForm, SignupForm
 from allauth.account.models import EmailAddress
 from allauth.core import context
 from allauth.tests import TestCase
-from allauth.utils import get_user_model, get_username_max_length
+from allauth.utils import get_username_max_length
 
 
 class CustomSignupFormTests(TestCase):
@@ -371,3 +371,38 @@ def test_prevent_enumeration_on(settings, user_factory):
     assert resp.context["form"].errors == {
         "email": ["A user is already registered with this email address."]
     }
+
+
+@pytest.mark.django_db
+def test_get_initial_with_valid_email():
+    """Test that the email field is populated with a valid email."""
+    request = RequestFactory().get("/signup/?email=test@example.com")
+    from allauth.account.views import signup
+
+    SessionMiddleware(lambda request: None).process_request(request)
+    request.user = AnonymousUser()
+    with context.request_context(request):
+        view = signup(request)
+    assert view.context_data["view"].get_initial()["email"] == "test@example.com"
+
+
+def test_signup_user_model_no_email(settings, client, password_factory, db, mailoutbox):
+    settings.ACCOUNT_USERNAME_REQUIRED = False
+    settings.ACCOUNT_EMAIL_REQUIRED = True
+    settings.ACCOUNT_EMAIL_VERIFICATION = app_settings.EmailVerificationMethod.MANDATORY
+    settings.ACCOUNT_USER_MODEL_EMAIL_FIELD = None
+    password = password_factory()
+    email = "user@example.com"
+    resp = client.post(
+        reverse("account_signup"),
+        {
+            "email": email,
+            "password1": password,
+            "password2": password,
+        },
+    )
+    assert resp.status_code == 302
+    email = EmailAddress.objects.get(email=email)
+    assert email.primary
+    assert not email.verified
+    assert len(mailoutbox) == 1

@@ -1,4 +1,91 @@
-0.57.0 (unreleased)
+0.59.0 (unreleased)
+*******************
+
+Note worthy changes
+-------------------
+
+- The MFA authenticator model now features "created at" an "last used "at"
+  timestamps.
+
+- The MFA authenticator model is now registered with the Django admin.
+
+- Added MFA signals emitted when authenticators are added, removed or (in case
+  of recovery codes) reset.
+
+- There is now an MFA adapter method ``can_delete_authenticator(authenticator)``
+  available that can be used to prevent users from deactivating e.g. their TOTP
+  authenticator.
+
+
+0.58.2 (2023-11-06)
+*******************
+
+Fixes
+-----
+
+- Added rate limiting to the MFA login form.
+
+
+0.58.1 (2023-10-29)
+*******************
+
+Fixes
+-----
+
+- Fixed missing ``{% load allauth %}`` in the login cancelled and verified email
+  required template.
+
+
+0.58.0 (2023-10-26)
+*******************
+
+Note worthy changes
+-------------------
+
+- The ``SocialAccount.extra_data`` field was a custom JSON field that used
+  ``TextField`` as the underlying implementation. It was once needed because
+  Django had no ``JSONField`` support. Now, this field is changed to use the
+  official ``JSONField()``. Migrations are in place.
+
+- Officially support Django 5.0.
+
+- In previous versions, users could never remove their primary email address.
+  This is constraint is now relaxed. In case the email address is not required,
+  for example, because the user logs in by username, removal of the email
+  address is allowed.
+
+- Added a new setting ``ACCOUNT_REAUTHENTICATION_REQUIRED`` that, when enabled,
+  requires the user to reauthenticate before changes (such as changing the
+  primary email address, adding a new email address, etc.) can be performed.
+
+
+Backwards incompatible changes
+------------------------------
+
+- Refactored the built-in templates, with the goal of being able to adjust the
+  look and feel of the whole project by only overriding a few core templates.
+  This approach allows you to achieve visual results fast, but is of course more
+  limited compared to styling all templates yourself. If your project provided
+  its own templates then this change will not affect anything, but if you rely
+  on (some of) the built-in templates your project may be affected.
+
+- The Azure provider has been removed in favor of keeping the Microsoft
+  provider. Both providers were targeting the same goal.
+
+
+Security notice
+---------------
+
+- Facebook: Using the JS SDK flow, it was possible to post valid access tokens
+  originating from other apps. Facebook user IDs are scoped per app. By default
+  that user ID (not the email address) is used as key while
+  authenticating. Therefore, such access tokens can not be abused by
+  default. However, in case ``SOCIALACCOUNT_EMAIL_AUTHENTICATION`` was
+  explicitly enabled for the Facebook provider, these tokens could be used to
+  login.
+
+
+0.57.0 (2023-09-24)
 *******************
 
 Note worthy changes
@@ -261,7 +348,7 @@ Security notice
 Note worthy changes
 -------------------
 
-- Example base template was missing ``{% load i18n}``, fixed.
+- Example base template was missing ``{% load i18n %}``, fixed.
 
 
 0.53.0 (2023-03-16)

@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from importlib import import_module
 
 from django import forms
@@ -7,8 +5,11 @@ from django.contrib.auth import password_validation
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.contrib.sites.shortcuts import get_current_site
 from django.core import exceptions, validators
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
+from django.utils.safestring import mark_safe
 from django.utils.translation import gettext, gettext_lazy as _, pgettext
+
+from allauth.account.authentication import record_authentication
 
 from ..utils import (
     build_absolute_uri,
@@ -20,6 +21,7 @@ from .adapter import get_adapter
 from .app_settings import AuthenticationMethod
 from .models import EmailAddress
 from .utils import (
+    assess_unique_email,
     filter_users_by_email,
     get_user_model,
     perform_login,
@@ -138,6 +140,15 @@ class LoginForm(forms.Form):
         set_form_field_order(self, ["login", "password", "remember"])
         if app_settings.SESSION_REMEMBER is not None:
             del self.fields["remember"]
+        try:
+            reset_url = reverse("account_reset_password")
+        except NoReverseMatch:
+            pass
+        else:
+            forgot_txt = _("Forgot your password?")
+            self.fields["password"].help_text = mark_safe(
+                f'<a href="{reset_url}">{forgot_txt}</a>'
+            )
 
     def user_credentials(self):
         """
@@ -191,13 +202,19 @@ class LoginForm(forms.Form):
         return self.cleaned_data
 
     def login(self, request, redirect_url=None):
-        email = self.user_credentials().get("email")
+        credentials = self.user_credentials()
+        extra_data = {
+            field: credentials.get(field)
+            for field in ["email", "username"]
+            if field in credentials
+        }
+        record_authentication(request, method="password", **extra_data)
         ret = perform_login(
             request,
             self.user,
             email_verification=app_settings.EMAIL_VERIFICATION,
             redirect_url=redirect_url,
-            email=email,
+            email=credentials.get("email"),
         )
         remember = app_settings.SESSION_REMEMBER
         if remember is None:
@@ -347,34 +364,16 @@ class BaseSignupForm(_base_signup_form_class()):
 
     def validate_unique_email(self, value):
         adapter = get_adapter()
-        if not EmailAddress.objects.lookup([value]).exists():
+        assessment = assess_unique_email(value)
+        if assessment is True:
             # All good.
             pass
-        elif not app_settings.PREVENT_ENUMERATION:
+        elif assessment is False:
             # Fail right away.
             raise forms.ValidationError(adapter.error_messages["email_taken"])
-        elif (
-            app_settings.EMAIL_VERIFICATION
-            == app_settings.EmailVerificationMethod.MANDATORY
-        ):
-            # In case of mandatory verification and enumeration prevention,
-            # we can avoid creating a new account with the same (unverified)
-            # email address, because we are going to send an email anyway.
-            assert app_settings.PREVENT_ENUMERATION
-            self.account_already_exists = True
-        elif app_settings.PREVENT_ENUMERATION == "strict":
-            # We're going to be strict on enumeration prevention, and allow for
-            # this email address to pass even though it already exists. In this
-            # scenario, you can signup multiple times using the same email
-            # address resulting in multiple accounts with an unverified email.
-            pass
         else:
-            assert app_settings.PREVENT_ENUMERATION is True
-            # Conflict. We're supposed to prevent enumeration, but we can't
-            # because that means letting the user in, while emails are required
-            # to be unique. In this case, uniqueness takes precedence over
-            # enumeration prevention.
-            raise forms.ValidationError(adapter.error_messages["email_taken"])
+            assert assessment is None
+            self.account_already_exists = True
         return adapter.validate_unique_email(value)
 
     def clean(self):
@@ -454,14 +453,15 @@ class SignupForm(BaseSignupForm):
         return self.cleaned_data
 
     def save(self, request):
+        email = self.cleaned_data.get("email")
         if self.account_already_exists:
-            raise ValueError(self.cleaned_data.get("email"))
+            raise ValueError(email)
         adapter = get_adapter()
         user = adapter.new_user(request)
         adapter.save_user(request, user, self)
         self.custom_signup(request, user)
         # TODO: Move into adapter `save_user` ?
-        setup_user_email(request, user, [])
+        setup_user_email(request, user, [EmailAddress(email=email)] if email else [])
         return user
 
 
@@ -484,7 +484,8 @@ class AddEmailForm(UserForm):
         from allauth.account import signals
 
         value = self.cleaned_data["email"]
-        value = get_adapter().clean_email(value)
+        adapter = get_adapter()
+        value = adapter.clean_email(value)
         errors = {
             "this_account": _(
                 "This email address is already associated with this account."
@@ -493,9 +494,16 @@ class AddEmailForm(UserForm):
         }
         users = filter_users_by_email(value)
         on_this_account = [u for u in users if u.pk == self.user.pk]
+        on_diff_account = [u for u in users if u.pk != self.user.pk]
 
         if on_this_account:
             raise forms.ValidationError(errors["this_account"])
+        if (
+            on_diff_account
+            and app_settings.PREVENT_ENUMERATION != "strict"
+            and app_settings.UNIQUE_EMAIL
+        ):
+            raise forms.ValidationError(adapter.error_messages["email_taken"])
         if not EmailAddress.objects.can_add_email(self.user):
             raise forms.ValidationError(
                 errors["max_email_addresses"] % app_settings.MAX_EMAIL_ADDRESSES
@@ -689,7 +697,7 @@ class ReauthenticateForm(forms.Form):
 
     def clean_password(self):
         password = self.cleaned_data.get("password")
-        if not self.user.check_password(password):
+        if not get_adapter().reauthenticate(self.user, password):
             raise forms.ValidationError(
                 get_adapter().error_messages["incorrect_password"]
             )

@@ -12,15 +12,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.7', '3.8', '3.9', '3.10', '3.11']
-        django-version: ['main', '3.2', '4.0', '4.1', '4.2']
+        python-version: ['3.7', '3.8', '3.9', '3.10', '3.11', '3.12']
+        django-version: ['main', '3.2', '4.0', '4.1', '4.2', '5.0']
         exclude:
           - python-version: '3.11'
             django-version: '3.2'
 
+          - python-version: '3.12'
+            django-version: '3.2'
+
           - python-version: '3.7'
-            django-version: '4.0'
-          - python-version: '3.11'
             django-version: '4.0'
 
           - python-version: '3.7'
@@ -30,9 +31,20 @@ jobs:
             django-version: '4.2'
 
           - python-version: '3.7'
+            django-version: '5.0'
+
+          - python-version: '3.8'
+            django-version: '5.0'
+
+          - python-version: '3.9'
+            django-version: '5.0'
+
+          - python-version: '3.7'
             django-version: 'main'
+
           - python-version: '3.8'
             django-version: 'main'
+
           - python-version: '3.9'
             django-version: 'main'
 
@@ -42,6 +54,8 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: ${{ matrix.python-version }}
+    - name: Updating package list
+      run: sudo apt-get update
     - name: Install xmlsec
       run: sudo apt-get install -y xmlsec1 libxmlsec1-dev
     - name: Install dependencies
@@ -63,7 +77,7 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        extra-env: ['docs', 'black', 'isort', 'flake8', 'standardjs']
+        extra-env: ['docs', 'black', 'isort', 'flake8', 'standardjs', 'djlint', 'compilemessages']
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-node@v3
@@ -74,8 +88,12 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
+    - name: Updating package list
+      run: sudo apt-get update
     - name: Install xmlsec
       run: sudo apt-get install -y xmlsec1 libxmlsec1-dev
+    - name: Install gettext
+      run: sudo apt-get install -y gettext
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip

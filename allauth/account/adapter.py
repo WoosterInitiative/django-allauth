@@ -10,6 +10,7 @@ from django.contrib import messages
 from django.contrib.auth import (
     authenticate,
     get_backends,
+    get_user_model,
     login as django_login,
     logout as django_logout,
 )
@@ -30,12 +31,14 @@ from django.utils.translation import gettext_lazy as _
 
 from allauth import app_settings as allauth_app_settings
 from allauth.account import signals
-from allauth.account.app_settings import EmailVerificationMethod
+from allauth.account.app_settings import (
+    AuthenticationMethod,
+    EmailVerificationMethod,
+)
 from allauth.core import context, ratelimit
 from allauth.utils import (
     build_absolute_uri,
     generate_unique_username,
-    get_user_model,
     import_attribute,
 )
 
@@ -87,6 +90,35 @@ class DefaultAccountAdapter(object):
         if verified_email:
             ret = verified_email.lower() == email.lower()
         return ret
+
+    def can_delete_email(self, email_address):
+        from allauth.account.models import EmailAddress
+
+        has_other = (
+            EmailAddress.objects.filter(user_id=email_address.user_id)
+            .exclude(pk=email_address.pk)
+            .exists()
+        )
+        login_by_email = (
+            app_settings.AUTHENTICATION_METHOD == AuthenticationMethod.EMAIL
+        )
+        if email_address.primary:
+            if has_other:
+                # Don't allow, let the user mark one of the others as primary
+                # first.
+                return False
+            elif login_by_email:
+                # Last email & login is by email, prevent dangling account.
+                return False
+            return True
+        elif has_other:
+            # Account won't be dangling.
+            return True
+        elif login_by_email:
+            # This is the last email.
+            return False
+        else:
+            return True
 
     def format_email_subject(self, subject):
         prefix = app_settings.EMAIL_SUBJECT_PREFIX
@@ -449,7 +481,7 @@ class DefaultAccountAdapter(object):
         return response
 
     def login(self, request, user):
-        from allauth.account.utils import record_authentication
+        from allauth.account.reauthentication import record_authentication
 
         # HACK: This is not nice. The proper Django way is to use an
         # authentication backend
@@ -525,12 +557,7 @@ class DefaultAccountAdapter(object):
         return ret
 
     def is_safe_url(self, url):
-        try:
-            from django.utils.http import url_has_allowed_host_and_scheme
-        except ImportError:
-            from django.utils.http import (
-                is_safe_url as url_has_allowed_host_and_scheme,
-            )
+        from django.utils.http import url_has_allowed_host_and_scheme
 
         # get_host already validates the given host, so no need to check it again
         allowed_hosts = {context.request.get_host()} | set(settings.ALLOWED_HOSTS)
@@ -649,6 +676,25 @@ class DefaultAccountAdapter(object):
     def authentication_failed(self, request, **credentials):
         pass
 
+    def reauthenticate(self, user, password):
+        from allauth.account.models import EmailAddress
+        from allauth.account.utils import user_email, user_username
+
+        credentials = {"password": password}
+        username = user_username(user)
+        if username:
+            credentials["username"] = username
+        email = None
+        primary = EmailAddress.objects.get_primary(user)
+        if primary:
+            email = primary.email
+        else:
+            email = user_email(user)
+        if email:
+            credentials["email"] = email
+        reauth_user = self.authenticate(context.request, **credentials)
+        return reauth_user is not None and reauth_user.pk == user.pk
+
     def is_ajax(self, request):
         return any(
             [
@@ -674,6 +720,32 @@ class DefaultAccountAdapter(object):
         ret = []
         if allauth_app_settings.MFA_ENABLED:
             ret.append("allauth.mfa.stages.AuthenticateStage")
+        return ret
+
+    def get_reauthentication_methods(self, user):
+        """The order of the methods returned matters. The first method is the
+        default when using the `@reauthentication_required` decorator.
+        """
+        ret = []
+        if not user.is_authenticated:
+            return ret
+        if user.has_usable_password():
+            ret.append(
+                {
+                    "description": _("Use your password"),
+                    "url": reverse("account_reauthenticate"),
+                }
+            )
+        if allauth_app_settings.MFA_ENABLED:
+            from allauth.mfa.utils import is_mfa_enabled
+
+            if is_mfa_enabled(user):
+                ret.append(
+                    {
+                        "description": _("Use your authenticator app"),
+                        "url": reverse("mfa_reauthenticate"),
+                    }
+                )
         return ret
 
 

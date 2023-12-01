@@ -41,6 +41,12 @@ TEMPLATES = [
     },
 ]
 
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.dummy.DummyCache",
+    }
+}
+
 MIDDLEWARE = (
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -48,7 +54,6 @@ MIDDLEWARE = (
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-
     "allauth.account.middleware.AccountMiddleware",
 )
 
@@ -72,7 +77,6 @@ INSTALLED_APPS = (
     "allauth.socialaccount.providers.asana",
     "allauth.socialaccount.providers.auth0",
     "allauth.socialaccount.providers.authentiq",
-    "allauth.socialaccount.providers.azure",
     "allauth.socialaccount.providers.baidu",
     "allauth.socialaccount.providers.basecamp",
     "allauth.socialaccount.providers.battlenet",
@@ -216,7 +220,7 @@ PASSWORD_HASHERS = [
 ACCOUNT_EMAIL_CONFIRMATION_COOLDOWN = 0
 ACCOUNT_RATE_LIMITS = {}
 
-
+SOCIALACCOUNT_QUERY_EMAIL = True
 SOCIALACCOUNT_PROVIDERS = {
     "openid_connect": {
         "APPS": [
